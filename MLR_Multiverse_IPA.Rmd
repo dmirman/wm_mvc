@@ -1,0 +1,104 @@
+---
+title: "Working Memory Development and Crashes: MLR Multiverse Analysis"
+author: "Dan Mirman"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+These are updated analyses run following in-principle acceptance in *Coretx*. Key changes/updates:
+
+* added Gender to set of covariates
+* added CFA scores to composite method
+
+```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(effects)
+library(broom.mixed)
+library(knitr)
+#library(patchwork)
+
+# read in data
+load("../WM_crash_N118_2020-11.RData")
+```
+
+```{r echo=FALSE, fig.height=3, fig.width=7, message=FALSE, warning=FALSE}
+pivot_longer(dat_comp_cfa, cols=c(StdScoreM, StdScoreM_CB, StdScore_CFA),
+             names_to = "Std_Type") %>%
+  mutate(Std_Type = factor(Std_Type, labels = c("CFA", "Within Wave", "Common Baseline"))) %>% 
+  ggplot(aes(Time, value, color=Group)) + 
+  facet_wrap(~ Std_Type) +
+  stat_summary(fun.data = mean_se, geom="pointrange") + 
+  stat_smooth(method = "lm", se=FALSE) +
+  theme_bw() + labs(y="WM Composite Score")
+```
+
+## MLR Multiverse
+
+These are multilevel regression (MLR) versions of the analyses of the association between WM development trajectory and crashes. The multiverse examines three main decision points:
+
+* WM measurement model (standardisation): within-wave vs. common-baseline
+    + Walshe et al. used within-wave
+    + Common-baseline more transparently represents the development pattern
+    + A longitudinal CFA model
+* Inclusion of covariates: yes vs. no
+    + Walshe et al. included covariates
+    + Covariates had minimal effects so excluding them may produce a more parsimonious model
+* Selection of waves: 1-6 vs. 2-6 vs. 1-5
+    + Walshe et al. used waves 2-6
+    + Using all waves (1-6) includes more data 
+    + Using waves 1-5 omits the post-crash WM assessment
+
+### Results
+```{r run_models_funct, echo=FALSE}
+my_tidy <- function(m){
+  #a slight variant of tidy() to keep track of convergence issues
+  result <- cbind(tidy(m), 
+  Convergence = is_empty(m@optinfo$conv$lme4))
+}
+run_models <- function(dat){
+  # function to run a quartet of models on the same data set
+  # model 1: within-wave std
+  m.ww <- lmer(StdScoreM ~ Gender + Reckless + Driving_Errors + Risk_Behav +
+                         Time*Group + (Time | ID),
+                       data = dat, REML = FALSE)
+  # model 2: remove covariates
+  m.ww_nocov <- update(m.ww, . ~ Time*Group + (Time | ID))
+  # model 3: common baseline
+  m.cb <- update(m.ww, StdScoreM_CB ~ .)
+  # model 4: CB remove covariates
+  m.cb_nocov <- update(m.cb, . ~ Time*Group + (Time | ID))
+  # model 5: CFA
+  m.cfa <- update(m.ww, StdScore_CFA ~ .)
+  # model 6: CFA remove covariates
+  m.cfa_nocov <- update(m.cfa, . ~ Time*Group + (Time | ID))
+  # extract key term info
+  result <- list(m.ww, m.ww_nocov, m.cb, m.cb_nocov, m.cfa, m.cfa_nocov) %>% 
+    plyr::ldply(., .fun="my_tidy") %>% 
+    filter(term == "Time:GroupNever_Crashed") %>% 
+    mutate(Standardisation = rep(c("Within_Wave", "Common_Baseline", "CFA"),
+                                 each=2),
+           Covariates = rep(c("Yes", "No"), 3)) %>% 
+    select(-effect, -group) %>% 
+    select(Standardisation, Covariates, everything())
+  return(result)
+}
+```
+
+```{r prep_data, echo=FALSE, warning=FALSE, message=FALSE}
+# main data set for models
+dat.all <- subset(dat_comp_cfa, Group != "Non_Driver")
+tmp <- list(dat.all, # all waves
+            subset(dat.all, Time > 0), # drop wave 1
+            subset(dat.all, Time < 6)) %>% # drop wave 6
+  plyr::ldply(., .fun="run_models") %>% 
+  mutate(Waves = rep(c("1-6", "2-6", "1-5"), each=6)) %>% 
+  select(Waves, everything())
+```
+
+```{r echo=FALSE}
+kable(select(tmp, -term, -df), digits = 3)
+tmp %>% mutate(Waves = str_replace(Waves, "-", "_")) %>% 
+         write_csv("MLR_MVresults.csv")
+```
